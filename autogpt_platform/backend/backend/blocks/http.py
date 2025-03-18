@@ -45,6 +45,7 @@ class SendWebRequestBlock(Block):
         response: object = SchemaField(description="The response from the server")
         client_error: object = SchemaField(description="The error on 4xx status codes")
         server_error: object = SchemaField(description="The error on 5xx status codes")
+        error: str = SchemaField(description="The error for unexpected exceptions")
 
     def __init__(self):
         super().__init__(
@@ -68,20 +69,48 @@ class SendWebRequestBlock(Block):
                     # we should send it as plain text instead
                     input_data.json_format = False
 
-        response = requests.request(
-            input_data.method.value,
-            input_data.url,
-            headers=input_data.headers,
-            json=body if input_data.json_format else None,
-            data=body if not input_data.json_format else None,
-        )
-        result = response.json() if input_data.json_format else response.text
+        try:
+            response = requests.request(
+                input_data.method.value,
+                input_data.url,
+                headers=input_data.headers,
+                json=body if input_data.json_format else None,
+                data=body if not input_data.json_format else None,
+            )
+            result = response.json() if input_data.json_format else response.text
 
-        if response.status_code // 100 == 2:
-            yield "response", result
-        elif response.status_code // 100 == 4:
-            yield "client_error", result
-        elif response.status_code // 100 == 5:
-            yield "server_error", result
-        else:
-            raise ValueError(f"Unexpected status code: {response.status_code}")
+            if response.status_code // 100 == 2:
+                yield "response", result
+            elif response.status_code // 100 == 4:
+                yield "client_error", result
+            elif response.status_code // 100 == 5:
+                yield "server_error", result
+            else:
+                raise ValueError(f"Unexpected status code: {response.status_code}")
+        except Exception as e:
+            # Check if this is an HTTP error with a response attribute
+            if hasattr(e, "response") and hasattr(e.response, "status_code"):
+                status_code = e.response.status_code
+
+                if status_code // 100 == 4:
+                    result = (
+                        e.response.json()
+                        if input_data.json_format and hasattr(e.response, "json")
+                        else str(e)
+                    )
+                    yield "client_error", result
+                elif status_code // 100 == 5:
+                    result = (
+                        e.response.json()
+                        if input_data.json_format and hasattr(e.response, "json")
+                        else str(e)
+                    )
+                    yield "server_error", result
+                else:
+                    yield "error", str(e)
+            else:
+                # Handle non-HTTP exceptions
+                yield "error", str(e)
+        except Exception as e:
+            # Yield to error pin for any other exceptions
+            yield "error", str(e)
